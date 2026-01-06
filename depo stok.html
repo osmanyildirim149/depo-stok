@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Depo Stok Takip</title>
+  <style>
+    body{font-family:system-ui,Arial;background:#0b0f14;color:#e6edf3;margin:0}
+    .wrap{max-width:1050px;margin:0 auto;padding:22px}
+    h1{margin:0 0 12px}
+    .card{background:#111823;border:1px solid #1d2a3a;border-radius:16px;padding:14px;margin:12px 0}
+    .grid{display:grid;grid-template-columns:repeat(6,1fr);gap:10px}
+    input,select,button{padding:10px;border-radius:10px;border:1px solid #253447;background:#0e1622;color:#e6edf3}
+    button{cursor:pointer}
+    button.primary{background:#1f6feb;border-color:#1f6feb}
+    button.danger{background:#b42318;border-color:#b42318}
+    table{width:100%;border-collapse:collapse;margin-top:10px}
+    th,td{border-bottom:1px solid #1d2a3a;padding:10px;text-align:left;font-size:14px}
+    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    .pill{display:inline-block;padding:4px 8px;border-radius:999px;border:1px solid #253447;font-size:12px}
+    .low{border-color:#ffb020;color:#ffcf6e}
+    .ok{border-color:#2ea043;color:#7ee787}
+    .muted{color:#9fb1c5;font-size:13px;margin:8px 0 0}
+    .right{display:flex;gap:8px;justify-content:flex-end}
+    @media (max-width: 900px){ .grid{grid-template-columns:repeat(2,1fr)} }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Depo Stok Takip</h1>
+
+  <div class="card">
+    <h2>Ürün Ekle</h2>
+    <div class="grid">
+      <input id="p_name" placeholder="Ürün adı">
+      <input id="p_sku" placeholder="SKU (benzersiz)">
+      <input id="p_barcode" placeholder="Barkod (opsiyonel)">
+      <input id="p_unit" placeholder="Birim (adet/kg/lt)" value="adet">
+      <input id="p_min" placeholder="Min stok" type="number" step="0.01" value="0">
+      <button class="primary" id="btnAddProduct">Ekle</button>
+    </div>
+    <div class="muted">Veriler bu cihazın tarayıcısına kaydolur (localStorage). Başka cihazda görünmez.</div>
+  </div>
+
+  <div class="card">
+    <h2>Stok Hareketi</h2>
+    <div class="grid">
+      <select id="m_product"></select>
+      <select id="m_type">
+        <option value="IN">Giriş (+)</option>
+        <option value="OUT">Çıkış (-)</option>
+        <option value="ADJ">Düzeltme (+/-)</option>
+      </select>
+      <input id="m_qty" placeholder="Miktar" type="number" step="0.01">
+      <input id="m_note" placeholder="Not (opsiyonel)">
+      <button class="primary" id="btnAddMove">Kaydet</button>
+      <button id="btnReset">Sıfırla (test)</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <h2 style="margin:0">Stok Durumu</h2>
+      <span class="pill" id="stats"></span>
+      <div class="right" style="margin-left:auto">
+        <button id="btnExport">Dışa Aktar (JSON)</button>
+        <button id="btnImport">İçe Aktar (JSON)</button>
+      </div>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>Ürün</th><th>SKU</th><th>Barkod</th><th>Stok</th><th>Birim</th><th>Min</th><th>Durum</th><th>Sil</th>
+        </tr>
+      </thead>
+      <tbody id="tblStock"></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Son Hareketler</h2>
+    <table>
+      <thead>
+        <tr><th>Tarih</th><th>Ürün</th><th>Tip</th><th>Miktar</th><th>Not</th></tr>
+      </thead>
+      <tbody id="tblMoves"></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+  // --- Storage Keys
+  const K_PRODUCTS = "depo_products_v1";
+  const K_MOVES = "depo_moves_v1";
+
+  // --- Helpers
+  const $ = (id) => document.getElementById(id);
+  const uid = () => Math.random().toString(16).slice(2) + Date.now().toString(16);
+  const nowISO = () => new Date().toISOString();
+
+  function loadProducts(){ return JSON.parse(localStorage.getItem(K_PRODUCTS) || "[]"); }
+  function loadMoves(){ return JSON.parse(localStorage.getItem(K_MOVES) || "[]"); }
+  function saveProducts(arr){ localStorage.setItem(K_PRODUCTS, JSON.stringify(arr)); }
+  function saveMoves(arr){ localStorage.setItem(K_MOVES, JSON.stringify(arr)); }
+
+  function normalizeQty(type, qty){
+    const n = Number(qty);
+    if (!Number.isFinite(n) || n === 0) return null;
+    if (type === "IN") return Math.abs(n);
+    if (type === "OUT") return -Math.abs(n);
+    return n; // ADJ
+  }
+
+  function stockMap(products, moves){
+    const map = {};
+    for (const p of products) map[p.id] = 0;
+    for (const m of moves){
+      if (map[m.productId] == null) continue;
+      map[m.productId] += Number(m.qty) || 0;
+    }
+    return map;
+  }
+
+  function render(){
+    const products = loadProducts();
+    const moves = loadMoves();
+    const smap = stockMap(products, moves);
+
+    // product dropdown
+    $("m_product").innerHTML = products.length
+      ? products.map(p => `<option value="${p.id}">${escapeHtml(p.name)} — ${escapeHtml(p.sku)}</option>`).join("")
+      : `<option value="">Önce ürün ekleyin</option>`;
+
+    // stock table
+    const rows = products.map(p => {
+      const st = +(smap[p.id] || 0);
+      const low = st < Number(p.min || 0);
+      const status = low ? `<span class="pill low">Düşük</span>` : `<span class="pill ok">Normal</span>`;
+      return `
+        <tr>
+          <td>${escapeHtml(p.name)}</td>
+          <td>${escapeHtml(p.sku)}</td>
+          <td>${escapeHtml(p.barcode || "")}</td>
+          <td>${fmt(st)}</td>
+          <td>${escapeHtml(p.unit || "adet")}</td>
+          <td>${fmt(Number(p.min || 0))}</td>
+          <td>${status}</td>
+          <td><button class="danger" data-del="${p.id}">Sil</button></td>
+        </tr>
+      `;
+    });
+
+    // low stats
+    const lowCount = products.filter(p => (smap[p.id]||0) < Number(p.min||0)).length;
+    $("stats").textContent = `Ürün: ${products.length} • Düşük stok: ${lowCount} • Hareket: ${moves.length}`;
+
+    $("tblStock").innerHTML = rows.join("") || `<tr><td colspan="8" class="muted">Henüz ürün yok.</td></tr>`;
+
+    // moves table (latest 100)
+    const pById = Object.fromEntries(products.map(p => [p.id, p]));
+    const mrows = moves.slice().reverse().slice(0,100).map(m=>{
+      const p = pById[m.productId];
+      const pname = p ? `${p.name} (${p.sku})` : "Silinmiş ürün";
+      const t = m.type === "IN" ? "Giriş" : m.type === "OUT" ? "Çıkış" : "Düzeltme";
+      return `
+        <tr>
+          <td>${escapeHtml(new Date(m.at).toLocaleString("tr-TR"))}</td>
+          <td>${escapeHtml(pname)}</td>
+          <td>${escapeHtml(t)}</td>
+          <td>${fmt(m.qty)}</td>
+          <td>${escapeHtml(m.note || "")}</td>
+        </tr>
+      `;
+    });
+    $("tblMoves").innerHTML = mrows.join("") || `<tr><td colspan="5" class="muted">Henüz hareket yok.</td></tr>`;
+  }
+
+  function fmt(n){
+    const x = Number(n);
+    if (!Number.isFinite(x)) return "0";
+    // 0.00 gibi gereksizleri kırp
+    return (Math.round(x * 100) / 100).toString();
+  }
+
+  function escapeHtml(s){
+    return String(s).replace(/[&<>"']/g, (c)=>({
+      "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"
+    }[c]));
+  }
+
+  // --- Actions
+  $("btnAddProduct").addEventListener("click", ()=>{
+    const name = $("p_name").value.trim();
+    const sku = $("p_sku").value.trim();
+    const barcode = $("p_barcode").value.trim();
+    const unit = $("p_unit").value.trim() || "adet";
+    const min = Number($("p_min").value || 0);
+
+    if (!name || !sku) return alert("Ürün adı ve SKU zorunlu.");
+    const products = loadProducts();
+    if (products.some(p => p.sku.toLowerCase() === sku.toLowerCase()))
+      return alert("Bu SKU zaten var. Farklı SKU gir.");
+
+    products.push({ id: uid(), name, sku, barcode: barcode || null, unit, min: Number.isFinite(min) ? min : 0 });
+    saveProducts(products);
+
+    $("p_name").value = "";
+    $("p_sku").value = "";
+    $("p_barcode").value = "";
+    $("p_min").value = "0";
+    render();
+  });
+
+  $("btnAddMove").addEventListener("click", ()=>{
+    const productId = $("m_product").value;
+    if (!productId) return alert("Önce ürün ekleyin.");
+
+    const type = $("m_type").value;
+    const q = normalizeQty(type, $("m_qty").value);
+    if (q === null) return alert("Miktar geçersiz (0 olamaz).");
+
+    const note = $("m_note").value.trim();
+    const moves = loadMoves();
+    moves.push({ id: uid(), productId, type, qty: q, note: note || null, at: nowISO() });
+    saveMoves(moves);
+
+    $("m_qty").value = "";
+    $("m_note").value = "";
+    render();
+  });
+
+  $("tblStock").addEventListener("click", (e)=>{
+    const btn = e.target.closest("button[data-del]");
+    if (!btn) return;
+    const id = btn.getAttribute("data-del");
+    if (!confirm("Ürünü silmek istiyor musun? (Hareketler kalır ama ürün adı 'Silinmiş ürün' olur)")) return;
+
+    const products = loadProducts().filter(p => p.id !== id);
+    saveProducts(products);
+    render();
+  });
+
+  $("btnReset").addEventListener("click", ()=>{
+    if (!confirm("Tüm verileri sıfırlayacağım. Emin misin?")) return;
+    localStorage.removeItem(K_PRODUCTS);
+    localStorage.removeItem(K_MOVES);
+    render();
+  });
+
+  $("btnExport").addEventListener("click", ()=>{
+    const data = {
+      exportedAt: nowISO(),
+      products: loadProducts(),
+      moves: loadMoves()
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], {type:"application/json"});
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "depo-stok-yedek.json";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
+
+  $("btnImport").addEventListener("click", async ()=>{
+    const inp = document.createElement("input");
+    inp.type = "file";
+    inp.accept = "application/json";
+    inp.onchange = async () => {
+      const file = inp.files?.[0];
+      if (!file) return;
+      try{
+        const text = await file.text();
+        const parsed = JSON.parse(text);
+        if (!parsed || !Array.isArray(parsed.products) || !Array.isArray(parsed.moves))
+          return alert("Geçersiz yedek dosyası.");
+
+        saveProducts(parsed.products);
+        saveMoves(parsed.moves);
+        render();
+      }catch{
+        alert("Dosya okunamadı / JSON bozuk.");
+      }
+    };
+    inp.click();
+  });
+
+  // initial render
+  render();
+</script>
+</body>
+</html>
