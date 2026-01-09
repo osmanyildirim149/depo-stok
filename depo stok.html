@@ -88,204 +88,101 @@
   </div>
 </div>
 
-<script>
-  // --- Storage Keys
-  const K_PRODUCTS = "depo_products_v1";
-  const K_MOVES = "depo_moves_v1";
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/12.7.0/firebase-app.js";
+  import { 
+    getAuth, 
+    signInWithEmailAndPassword, 
+    onAuthStateChanged, 
+    signOut 
+  } from "https://www.gstatic.com/firebasejs/12.7.0/firebase-auth.js";
+  import { 
+    getFirestore, 
+    collection, 
+    addDoc, 
+    onSnapshot, 
+    query, 
+    orderBy, 
+    serverTimestamp 
+  } from "https://www.gstatic.com/firebasejs/12.7.0/firebase-firestore.js";
 
-  // --- Helpers
-  const $ = (id) => document.getElementById(id);
-  const uid = () => Math.random().toString(16).slice(2) + Date.now().toString(16);
-  const nowISO = () => new Date().toISOString();
+  // 🔑 Firebase config
+  const firebaseConfig = {
+    apiKey: "AIzaSyBkQ1PLIHZCHSxchaaFOnPZ2LcbnkFS_c",
+    authDomain: "stok-1b644.firebaseapp.com",
+    projectId: "stok-1b644",
+    storageBucket: "stok-1b644.firebasestorage.app",
+    messagingSenderId: "429744561222",
+    appId: "1:429744561222:web:dd661ae358bc4ef147e47"
+  };
 
-  function loadProducts(){ return JSON.parse(localStorage.getItem(K_PRODUCTS) || "[]"); }
-  function loadMoves(){ return JSON.parse(localStorage.getItem(K_MOVES) || "[]"); }
-  function saveProducts(arr){ localStorage.setItem(K_PRODUCTS, JSON.stringify(arr)); }
-  function saveMoves(arr){ localStorage.setItem(K_MOVES, JSON.stringify(arr)); }
+  // Init
+  const app = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+  const db = getFirestore(app);
 
-  function normalizeQty(type, qty){
-    const n = Number(qty);
-    if (!Number.isFinite(n) || n === 0) return null;
-    if (type === "IN") return Math.abs(n);
-    if (type === "OUT") return -Math.abs(n);
-    return n; // ADJ
-  }
+  // HTML elemanları
+  const emailEl = document.getElementById("email");
+  const passEl = document.getElementById("pass");
+  const loginBtn = document.getElementById("loginBtn");
+  const logoutBtn = document.getElementById("logoutBtn");
+  const authState = document.getElementById("authState");
 
-  function stockMap(products, moves){
-    const map = {};
-    for (const p of products) map[p.id] = 0;
-    for (const m of moves){
-      if (map[m.productId] == null) continue;
-      map[m.productId] += Number(m.qty) || 0;
+  const nameEl = document.getElementById("name");
+  const qtyEl = document.getElementById("qty");
+  const thrEl = document.getElementById("thr");
+  const noteEl = document.getElementById("note");
+  const saveBtn = document.getElementById("saveBtn");
+
+  // 🔐 Login
+  loginBtn.onclick = async () => {
+    await signInWithEmailAndPassword(
+      auth,
+      emailEl.value,
+      passEl.value
+    );
+  };
+
+  logoutBtn.onclick = () => signOut(auth);
+
+  // Auth state
+  onAuthStateChanged(auth, user => {
+    if (user) {
+      authState.textContent = "Giriş: " + user.email;
+      logoutBtn.disabled = false;
+    } else {
+      authState.textContent = "Giriş yapılmadı";
+      logoutBtn.disabled = true;
     }
-    return map;
-  }
+  });
 
-  function render(){
-    const products = loadProducts();
-    const moves = loadMoves();
-    const smap = stockMap(products, moves);
+  // 💾 Firestore kaydet
+  saveBtn.onclick = async () => {
+    if (!nameEl.value) {
+      alert("Ürün adı boş");
+      return;
+    }
 
-    // product dropdown
-    $("m_product").innerHTML = products.length
-      ? products.map(p => `<option value="${p.id}">${escapeHtml(p.name)} — ${escapeHtml(p.sku)}</option>`).join("")
-      : `<option value="">Önce ürün ekleyin</option>`;
-
-    // stock table
-    const rows = products.map(p => {
-      const st = +(smap[p.id] || 0);
-      const low = st < Number(p.min || 0);
-      const status = low ? `<span class="pill low">Düşük</span>` : `<span class="pill ok">Normal</span>`;
-      return `
-        <tr>
-          <td>${escapeHtml(p.name)}</td>
-          <td>${escapeHtml(p.sku)}</td>
-          <td>${escapeHtml(p.barcode || "")}</td>
-          <td>${fmt(st)}</td>
-          <td>${escapeHtml(p.unit || "adet")}</td>
-          <td>${fmt(Number(p.min || 0))}</td>
-          <td>${status}</td>
-          <td><button class="danger" data-del="${p.id}">Sil</button></td>
-        </tr>
-      `;
+    await addDoc(collection(db, "items"), {
+      name: nameEl.value,
+      qty: Number(qtyEl.value),
+      threshold: Number(thrEl.value),
+      note: noteEl.value,
+      createdAt: serverTimestamp()
     });
 
-    // low stats
-    const lowCount = products.filter(p => (smap[p.id]||0) < Number(p.min||0)).length;
-    $("stats").textContent = `Ürün: ${products.length} • Düşük stok: ${lowCount} • Hareket: ${moves.length}`;
+    nameEl.value = "";
+    qtyEl.value = 0;
+    thrEl.value = 0;
+    noteEl.value = "";
+  };
 
-    $("tblStock").innerHTML = rows.join("") || `<tr><td colspan="8" class="muted">Henüz ürün yok.</td></tr>`;
-
-    // moves table (latest 100)
-    const pById = Object.fromEntries(products.map(p => [p.id, p]));
-    const mrows = moves.slice().reverse().slice(0,100).map(m=>{
-      const p = pById[m.productId];
-      const pname = p ? `${p.name} (${p.sku})` : "Silinmiş ürün";
-      const t = m.type === "IN" ? "Giriş" : m.type === "OUT" ? "Çıkış" : "Düzeltme";
-      return `
-        <tr>
-          <td>${escapeHtml(new Date(m.at).toLocaleString("tr-TR"))}</td>
-          <td>${escapeHtml(pname)}</td>
-          <td>${escapeHtml(t)}</td>
-          <td>${fmt(m.qty)}</td>
-          <td>${escapeHtml(m.note || "")}</td>
-        </tr>
-      `;
-    });
-    $("tblMoves").innerHTML = mrows.join("") || `<tr><td colspan="5" class="muted">Henüz hareket yok.</td></tr>`;
-  }
-
-  function fmt(n){
-    const x = Number(n);
-    if (!Number.isFinite(x)) return "0";
-    // 0.00 gibi gereksizleri kırp
-    return (Math.round(x * 100) / 100).toString();
-  }
-
-  function escapeHtml(s){
-    return String(s).replace(/[&<>"']/g, (c)=>({
-      "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"
-    }[c]));
-  }
-
-  // --- Actions
-  $("btnAddProduct").addEventListener("click", ()=>{
-    const name = $("p_name").value.trim();
-    const sku = $("p_sku").value.trim();
-    const barcode = $("p_barcode").value.trim();
-    const unit = $("p_unit").value.trim() || "adet";
-    const min = Number($("p_min").value || 0);
-
-    if (!name || !sku) return alert("Ürün adı ve SKU zorunlu.");
-    const products = loadProducts();
-    if (products.some(p => p.sku.toLowerCase() === sku.toLowerCase()))
-      return alert("Bu SKU zaten var. Farklı SKU gir.");
-
-    products.push({ id: uid(), name, sku, barcode: barcode || null, unit, min: Number.isFinite(min) ? min : 0 });
-    saveProducts(products);
-
-    $("p_name").value = "";
-    $("p_sku").value = "";
-    $("p_barcode").value = "";
-    $("p_min").value = "0";
-    render();
+  // 👀 Canlı dinleme (3 kişi aynı anda görür)
+  const q = query(collection(db, "items"), orderBy("createdAt", "desc"));
+  onSnapshot(q, snap => {
+    console.log("Güncel stok:", snap.docs.map(d => d.data()));
   });
-
-  $("btnAddMove").addEventListener("click", ()=>{
-    const productId = $("m_product").value;
-    if (!productId) return alert("Önce ürün ekleyin.");
-
-    const type = $("m_type").value;
-    const q = normalizeQty(type, $("m_qty").value);
-    if (q === null) return alert("Miktar geçersiz (0 olamaz).");
-
-    const note = $("m_note").value.trim();
-    const moves = loadMoves();
-    moves.push({ id: uid(), productId, type, qty: q, note: note || null, at: nowISO() });
-    saveMoves(moves);
-
-    $("m_qty").value = "";
-    $("m_note").value = "";
-    render();
-  });
-
-  $("tblStock").addEventListener("click", (e)=>{
-    const btn = e.target.closest("button[data-del]");
-    if (!btn) return;
-    const id = btn.getAttribute("data-del");
-    if (!confirm("Ürünü silmek istiyor musun? (Hareketler kalır ama ürün adı 'Silinmiş ürün' olur)")) return;
-
-    const products = loadProducts().filter(p => p.id !== id);
-    saveProducts(products);
-    render();
-  });
-
-  $("btnReset").addEventListener("click", ()=>{
-    if (!confirm("Tüm verileri sıfırlayacağım. Emin misin?")) return;
-    localStorage.removeItem(K_PRODUCTS);
-    localStorage.removeItem(K_MOVES);
-    render();
-  });
-
-  $("btnExport").addEventListener("click", ()=>{
-    const data = {
-      exportedAt: nowISO(),
-      products: loadProducts(),
-      moves: loadMoves()
-    };
-    const blob = new Blob([JSON.stringify(data, null, 2)], {type:"application/json"});
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = "depo-stok-yedek.json";
-    a.click();
-    URL.revokeObjectURL(a.href);
-  });
-
-  $("btnImport").addEventListener("click", async ()=>{
-    const inp = document.createElement("input");
-    inp.type = "file";
-    inp.accept = "application/json";
-    inp.onchange = async () => {
-      const file = inp.files?.[0];
-      if (!file) return;
-      try{
-        const text = await file.text();
-        const parsed = JSON.parse(text);
-        if (!parsed || !Array.isArray(parsed.products) || !Array.isArray(parsed.moves))
-          return alert("Geçersiz yedek dosyası.");
-
-        saveProducts(parsed.products);
-        saveMoves(parsed.moves);
-        render();
-      }catch{
-        alert("Dosya okunamadı / JSON bozuk.");
-      }
-    };
-    inp.click();
-  });
-
-  // initial render
-  render();
 </script>
 </body>
 </html>
+
